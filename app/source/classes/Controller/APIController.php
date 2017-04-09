@@ -22,6 +22,7 @@ use Leafpub\Admin,
     Leafpub\Theme,
     Leafpub\Importer,
     Leafpub\Mailer,
+    Leafpub\Widget,
     Leafpub\Mailer\Mail\MailFactory,
     Leafpub\Mailer\Mail\AddressFactory,
     Leafpub\Events\Application\MailCompose,
@@ -221,17 +222,27 @@ class APIController extends Controller {
             'query' => empty($params['query']) ? null : $params['query']
         ], $pagination);
 
-        // Render post list
-        $html = Admin::render('partials/post-list', [
-            'posts' => $posts
-        ]);
+        if ($this->returnJson($request)){
+            $postArray = [
+                'success' => true,
+                'posts' => $posts,
+                'pagination' => $pagination
+            ];
+        } else {
+            // Render post list
+            $html = Admin::render('partials/post-list', [
+                'posts' => $posts
+            ]);
+
+            $postArray = [
+                'success' => true,
+                'html' => $html,
+                'pagination' => $pagination
+            ];
+        }
 
         // Send response
-        return $response->withJson([
-            'success' => true,
-            'html' => $html,
-            'pagination' => $pagination
-        ]);
+        return $response->withJson($postArray);
     }
 
     /**
@@ -247,7 +258,15 @@ class APIController extends Controller {
         $params = $request->getParams();
         $properties = $params['properties'];
         $slug = $action === 'add' ? $properties['slug'] : $args['slug'];
-        $properties['slug'] = $slug;
+        if ($slug !== $properties['slug']){
+            $properties['oldSlug'] = $slug;
+        } else {
+            $properties['slug'] = $slug;
+        }
+
+        if ($properties['author'] === '=quick='){
+            $properties['author'] = Session::user('slug');
+        }
 
         // If you're not an owner, admin, or editor then you can only add/update your own posts
         if(
@@ -455,6 +474,17 @@ class APIController extends Controller {
             ->write($html);
     }
 
+    public function unlockPost($request, $response, $args){
+        $post = Post::getOne($args['slug']);
+        if($post['meta']['lock'][0] === Session::user('slug')) {
+            return $response->withJson([
+                'success' => Post::unlockPostAfterEdit($post['id'])
+            ]);
+        }
+
+        return $response->withJson(['success' => false]);
+    }
+
     public function activatePlugin($request, $response, $args){
         if (!Session::isRole(['owner', 'admin'])){
             return $response->withJson([
@@ -559,17 +589,27 @@ class APIController extends Controller {
             'query' => empty($params['query']) ? null : $params['query']
         ], $pagination);
 
-        // Render post list
-        $html = Admin::render('partials/plugin-list', [
-            'plugins' => $plugins
-        ]);
+        if ($this->returnJson($request)){
+            $pluginArray = [
+                'success' => true,
+                'plugins' => $plugins,
+                'pagination' => $pagination
+            ];
+        } else {
+            // Render post list
+            $html = Admin::render('partials/plugin-list', [
+                'plugins' => $plugins
+            ]);
+
+            $pluginArray = [
+                'success' => true,
+                'html' => $html,
+                'pagination' => $pagination
+            ];
+        }
 
         // Send response
-        return $response->withJson([
-            'success' => true,
-            'html' => $html,
-            'pagination' => $pagination
-        ]);
+        return $response->withJson($pluginArray);
     }
 
     /**
@@ -584,7 +624,7 @@ class APIController extends Controller {
     public function deleteHistory($request, $response, $args) {
         // Get the history item and the affected post so we can verify privileges
         $history = History::getOne($args['id']);
-        $post = Post::getOne($history['slug']);
+        $post = Post::getOne((int) $history['post']);
         if(!$history || !$post) {
             return $response->withJson([
                 'success' => false
@@ -662,17 +702,27 @@ class APIController extends Controller {
             'query' => empty($params['query']) ? null : $params['query']
         ], $pagination);
 
-        // Render tag list
-        $html = Admin::render('partials/tag-list', [
-            'tags' => $tags
-        ]);
+        if ($this->returnJson($request)){
+            $tagArray = [
+                'success' => true,
+                'tags' => $tags,
+                'pagination' => $pagination
+            ];
+        } else {
+            // Render tag list
+            $html = Admin::render('partials/tag-list', [
+                'tags' => $tags
+            ]);
+
+            $tagArray = [
+                'success' => true,
+                'html' => $html,
+                'pagination' => $pagination
+            ];
+        }
 
         // Send response
-        return $response->withJson([
-            'success' => true,
-            'html' => $html,
-            'pagination' => $pagination
-        ]);
+        return $response->withJson($tagArray);
     }
 
     /**
@@ -855,17 +905,27 @@ class APIController extends Controller {
             'query' => empty($params['query']) ? null : $params['query']
         ], $pagination);
 
-        // Render post list
-        $html = Admin::render('partials/user-list', [
-            'users' => $users
-        ]);
+        if ($this->returnJson($request)){
+            $userArray = [
+                'success' => true,
+                'user' => $users,
+                'pagination' => $pagination
+            ];
+        } else {
+            // Render post list
+            $html = Admin::render('partials/user-list', [
+                'users' => $users
+            ]);
 
-        // Send response
-        return $response->withJson([
-            'success' => true,
-            'html' => $html,
-            'pagination' => $pagination
-        ]);
+            // Send response
+            $userArray = [
+                'success' => true,
+                'html' => $html,
+                'pagination' => $pagination
+            ];
+        }
+
+        return $response->withJson($userArray);
     }
 
     /**
@@ -1068,7 +1128,8 @@ class APIController extends Controller {
             'maintenance' => $params['maintenance'] === 'on' ? 'on' : 'off',
             'maintenance_message' => $params['maintenance-message'],
             'hbs_cache' => $params['hbs-cache'] === 'on' ? 'on' : 'off',
-            'mailer' => $params['mailer']
+            'mailer' => $params['mailer'],
+            'showDashboard' => $params['showDashboard'] === 'on' ? 'on' : 'off'
         ];
 
         // Update settings
@@ -1283,6 +1344,21 @@ class APIController extends Controller {
         $params = $request->getParams();
         $html = '';
         $items = [];
+        $isDashboard = (substr($request->getServerParam('HTTP_REFERER'), -5) == 'admin');
+
+        if ($isDashboard){
+            foreach(Widget::getWidgets() as $widget){
+                if(mb_stristr($widget['name'], $params['query'])){
+                    $items[] = [
+                        'title' => 'Widget: ' . $widget['name'],
+                        'name' => $widget['name'],
+                        'description' => $widget['description'],
+                        'link' => '#',
+                        'icon' => 'fa fa-rocket'
+                    ];
+                }
+            }
+        }
 
         // Search menu items
         foreach(Admin::getMenuItems() as $nav) {
@@ -1387,17 +1463,27 @@ class APIController extends Controller {
             'query' => empty($params['query']) ? null : $params['query']
         ], $pagination);
 
-        // Render post list
-        $html = Admin::render('partials/media-list', [
-            'uploads' => $uploads
-        ]);
+        if ($this->returnJson($request)){
+            $uploadArray = [
+                'success' => true,
+                'uploads' => $uploads,
+                'pagination' => $pagination
+            ];
+        } else {
+            // Render post list
+            $html = Admin::render('partials/media-list', [
+                'uploads' => $uploads
+            ]);
 
-        // Send response
-        return $response->withJson([
-            'success' => true,
-            'html' => $html,
-            'pagination' => $pagination
-        ]);
+            // Send response
+            $uploadArray = [
+                'success' => true,
+                'html' => $html,
+                'pagination' => $pagination
+            ];
+        }
+
+        return $response->withJson($uploadArray);
     }
 
     public function getUpload($request, $response, $args){
@@ -1635,4 +1721,54 @@ class APIController extends Controller {
         ]);
     }
 
+    public function updateLeafpubDatabase($request, $response, $args){
+        if (!Session::isRole(['owner', 'admin'])){
+            return $response->withStatus(403);
+        }
+        
+        if (version_compare(LEAFPUB_SCHEME_VERSION, (\Leafpub\Models\Setting::getOne('schemeVersion') ?: 0)) < 1){
+           return $response->withStatus(403); 
+        }
+
+        try {
+            \Leafpub\Database::updateDatabase();
+            \Leafpub\Leafpub::getLogger()->info('setting new scheme version');
+            \Leafpub\Models\Setting::edit(['name' => 'schemeVersion', 'value' => LEAFPUB_SCHEME_VERSION]);
+        } catch (\Exception $e){
+            
+        }
+
+        return $response->withJson([
+            'success' => true,
+            'newScheme' => LEAFPUB_SCHEME_VERSION
+        ]);
+    }
+
+    public function setDashboard($request, $response, $next){
+        try {
+            $data = $request->getParams('data');
+            Leafpub::getLogger()->debug($data['data']);
+            \Leafpub\Models\Setting::edit(
+                [
+                    'name' => 'dashboard_' . Session::user('slug'),
+                    'value' => $data['data']
+                ]
+            );
+            return $response->withJson(['success' => false]);
+        } catch(\Exception $e){
+            return $response->withJson(['success' => false]);
+        }
+    }
+
+    public function getWidget($request, $response, $next){
+        $widget = $request->getParam('widget');
+
+        $html = Widget::getWidget($widget);
+        if ($html){
+            return $response->withJson([
+                'success' => true,
+                'html' => $html
+            ]);
+        }
+    }
 }

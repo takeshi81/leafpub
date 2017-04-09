@@ -13,6 +13,7 @@ use Leafpub\Leafpub,
     Leafpub\Theme,
     Leafpub\Renderer,
     Leafpub\Session,
+    Leafpub\Models\PostMeta,
     Leafpub\Events\Post\Add,
     Leafpub\Events\Post\Added,
     Leafpub\Events\Post\Update,
@@ -27,6 +28,13 @@ use Leafpub\Leafpub,
 
 class Post extends AbstractModel {
     protected static $_instance;
+
+    protected static $allowedCaller = [
+        'Leafpub\\Controller\\AdminController', 
+        'Leafpub\\Controller\\APIController',
+        'Leafpub\\Models\\Post'
+    ];
+    
     /**
     * Constants
     **/
@@ -82,8 +90,8 @@ class Post extends AbstractModel {
         if($options['start_date']) $start_date = Leafpub::localToUtc($options['start_date']);
         if($options['end_date']) $end_date = Leafpub::localToUtc($options['end_date']);
 
-        // If there's a query of > 3 chars, make it a fulltext search
-        $is_fulltext = mb_strlen($options['query']) > 3;
+        // If there's a query of > 4 chars, make it a fulltext search
+        $is_fulltext = mb_strlen($options['query']) >= 4;
 
         $columns = [
             'id', 'slug', 'created', 'pub_date', 'author',
@@ -92,8 +100,8 @@ class Post extends AbstractModel {
         ];
          
         if($is_fulltext) {
-                $columns[] = ['title_score' , new \Zend\Db\Sql\Expression('MATCH(slug, title) AGAINST (' . $options['query'] . ')')];
-                $columns[] = ['content_score' , new \Zend\Db\Sql\Expression('MATCH(content) AGAINST (' . $options['query'] . ')')];
+                $columns['title_score'] = new \Zend\Db\Sql\Expression('MATCH(slug, title) AGAINST (\'' . $options['query'] . '\')');
+                $columns['content_score'] = new \Zend\Db\Sql\Expression('MATCH(content) AGAINST (\'' . $options['query'] . '\')');
         }
 
         $prefix = Tables\TableGateway::$prefix;
@@ -158,7 +166,7 @@ class Post extends AbstractModel {
 
         // Generate order SQL
         if($is_fulltext) {
-            $select->order('(title_score * 1.5 + content_score)');
+            $select->order(new \Zend\Db\Sql\Expression("(title_score * 1.5 + content_score)"));
         } else {
             $select->order('sticky '. $options['sort'])->order('pub_date '. $options['sort'])->order('id '. $options['sort']);
         }
@@ -211,8 +219,12 @@ class Post extends AbstractModel {
             $prefix = Tables\TableGateway::$prefix;
             $select = new \Zend\Db\Sql\Sql(self::getModel()->getAdapter());
             $select = $select->select();
-            $select->from($prefix.'view_posts')
-                   ->where(['slug' => $slug]);
+            $select->from($prefix.'view_posts');
+            if (is_integer($slug)){
+                $select->where(['id' => $slug]);
+            } else {
+                $select->where(['slug' => $slug]);
+            }
             $post = self::getModel()->selectWith($select)->current();
             if(!$post) return false;
         } catch(\PDOException $e) {
@@ -236,6 +248,10 @@ class Post extends AbstractModel {
     *
     **/
     public static function create($post){
+        if (!self::isAllowedCaller()){
+            return false;
+        }
+
         // Enforce slug syntax
         $slug = $post['slug'];
         $slug = Leafpub::slug($slug);
@@ -270,7 +286,7 @@ class Post extends AbstractModel {
         }
 
         // Don't allow null properties
-        $post['image'] = Upload::getImageId($post['image']);
+        $post['image'] = Upload::getImageId($post['image']) ?: 0;
         $post['meta_title'] = (string) $post['meta_title'];
         $post['meta_description'] = (string) $post['meta_description'];
 
@@ -321,7 +337,16 @@ class Post extends AbstractModel {
     *
     **/ 
     public static function edit($properties){
-        $slug = $properties['slug'];
+        if (!self::isAllowedCaller()){
+            return false;
+        }
+
+        if (isset($properties['oldSlug'])){
+            $slug = $properties['oldSlug'];
+            unset($properties['oldSlug']);
+        } else {
+            $slug = $properties['slug'];
+        }
         // Get the post
         $post = self::getOne($slug);
         if(!$post) {
@@ -333,7 +358,9 @@ class Post extends AbstractModel {
         $tags = $post['tags'];
         unset($post['tags']);
         unset($post['tag_data']);
-
+        unset($post['media']);
+        unset($post['meta']);
+        
         // Parse publish date format and convert to UTC
         $post['pub_date'] = Leafpub::localToUtc(Leafpub::parseDate($post['pub_date']));
 
@@ -369,7 +396,7 @@ class Post extends AbstractModel {
         // Change the slug?
         if($post['slug'] !== $slug) {
             // Enforce slug syntax
-            $post['slug'] = self::slug($post['slug']);
+            $post['slug'] = Leafpub::slug($post['slug']);
 
             // Is the slug valid?
             if(!mb_strlen($post['slug']) || Leafpub::isProtectedSlug($post['slug'])) {
@@ -418,6 +445,10 @@ class Post extends AbstractModel {
     *
     **/
     public static function delete($slug){
+        if (!self::isAllowedCaller()){
+            return false;
+        }
+        
         // If this post is the custom homepage, update settings
         if($slug === Setting::getOne('homepage')) {
             Setting::update('homepage', '');
@@ -463,6 +494,7 @@ class Post extends AbstractModel {
     public static function count($options = null) {
         // Merge options
         $options = array_merge([
+            'query' => null,
             'author' => null,
             'end_date' => date('Y-m-d H:i:s'),
             'status' => 'published',
@@ -474,6 +506,7 @@ class Post extends AbstractModel {
             'tag' => null
         ], (array) $options);
 
+        $is_fulltext = mb_strlen($options['query']) >= 4;
         $prefix = Tables\TableGateway::$prefix;
         $select = new \Zend\Db\Sql\Sql(self::getModel()->getAdapter());
         $select = $select->select();
@@ -483,7 +516,14 @@ class Post extends AbstractModel {
         if($options['start_date']) $start_date = Leafpub::localToUtc($options['start_date']);
         if($options['end_date']) $end_date = Leafpub::localToUtc($options['end_date']);
 
-        $where = function($wh) use($options, $prefix){
+        $where = function($wh) use($options, $prefix, $is_fulltext){
+            if($is_fulltext) {
+                // Fulltext search
+                $wh->expression('MATCH(slug, title, content) AGAINST(?)', $options['query']);
+            } else {
+                $wh->expression('CONCAT(slug, title) LIKE ?', '%' . $options['query'] . '%');
+            }
+
             // Add options to query
             if($options['author']){
                 $wh->equalTo('author', $options['author']);
@@ -643,8 +683,10 @@ class Post extends AbstractModel {
                 $slug);
         };
 
+        $sort = $options['direction'] === 'next' ? 'ASC' : 'DESC';
+
         $select->where($where);
-        $select->order('pub_date');
+        $select->order('pub_date ' . $sort);
         $select->limit(1);
 
         try {
@@ -1081,6 +1123,28 @@ class Post extends AbstractModel {
        }
     }
 
+    private static function getPostMeta($post_id){
+        try{
+            $meta = PostMeta::getMany(['post' => $post_id]);
+            foreach($meta as $met){
+                $ret[$met['name']] = [$met['value'], $met['created']];
+            }
+            if (isset($ret['lock'])){
+                $time = strtotime($ret['lock'][1]);
+                $diff = date('U') - $time;
+                // If difference between lock date and now is gt 1 unlock automatically
+                if (round($diff / (3600*24)) >= 1){
+                    self::unlockPostAfterEdit($post_id);
+                    unset($ret['lock']);
+                }    
+            }
+            return $ret;
+        } catch(\Exception $e){
+            Leafpub::getLogger()->debug($e->getMessage());
+            return false;
+        }
+    }
+
     /**
     * Normalize data types for certain fields
     *
@@ -1101,7 +1165,8 @@ class Post extends AbstractModel {
 
         // Append tags
         $post['tags'] = self::getTags($post['id']);
-        $posts['media'] = self::getUploads($post['id']);
+        $post['media'] = self::getUploads($post['id']);
+        $post['meta'] = self::getPostMeta($post['id']);
 
         return $post;
     }
@@ -1194,9 +1259,44 @@ class Post extends AbstractModel {
     
     // Assign posts to new user
     public static function updateRecepient($oldAuthorId, $newAuthorId){
+        if (!self::isAllowedCaller()){
+            return false;
+        }
+
         try {
             return self::getModel()->update(['author' => $newAuthorId], ['author' => $oldAuthorId]);
         } catch (\Exception $e){
+            return false;
+        }
+    }
+
+    public static function increaseViewCount($slug){
+        $id = self::getOne($slug)['id'];
+        $vc = PostMeta::getOne(['post' => $id, 'name' => 'viewCount'])['value'];
+        if (!$vc){
+            return PostMeta::create(['name' => 'viewCount', 'value' => 1, 'post' => $id]);
+        } else {
+            $vc++;
+            return PostMeta::edit(['name' => 'viewCount', 'value' => $vc, 'post' => $id]);
+        }
+    }
+
+    public static function lockPostForEdit($post_id){
+        try{
+            PostMeta::create([
+                'post' => $post_id,
+                'name' => 'lock',
+                'value' => Session::user('slug')
+            ]);
+        } catch(\Exception $e){
+            return false;
+        }
+    }
+
+    public static function unlockPostAfterEdit($post_id){
+        try{
+            return PostMeta::delete(['post' => $post_id, 'name' => 'lock']);
+        } catch(\Exception $e){
             return false;
         }
     }
