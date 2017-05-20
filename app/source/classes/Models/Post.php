@@ -32,7 +32,8 @@ class Post extends AbstractModel {
     protected static $allowedCaller = [
         'Leafpub\\Controller\\AdminController', 
         'Leafpub\\Controller\\APIController',
-        'Leafpub\\Models\\Post'
+        'Leafpub\\Models\\Post',
+        'Leafpub\\Importer\\AbstractImporter'
     ];
     
     /**
@@ -347,6 +348,7 @@ class Post extends AbstractModel {
         } else {
             $slug = $properties['slug'];
         }
+
         // Get the post
         $post = self::getOne($slug);
         if(!$post) {
@@ -866,7 +868,16 @@ class Post extends AbstractModel {
         if($options['zen']) {
             $template = Leafpub::path('source/templates/editor.zen.hbs');
         } else {
-            $template = Theme::getPath($post['page'] ? 'page.hbs' : 'post.hbs');
+            if ($options['amp']){
+                $ret = self::ampifyImageTags($post['content']);
+                $options['embed_media'] = $ret['embed_media'];
+                $options['embed_social'] = $ret['embed_social'];
+                $post['content'] = $ret['html'];
+                $template = Leafpub::path('source/templates/amp-template.hbs');   
+            } else {
+                $options['amp'] = false;
+                $template = Theme::getPath($post['page'] ? 'page.hbs' : 'post.hbs');
+            }
         }
 
         // Generate event
@@ -874,6 +885,9 @@ class Post extends AbstractModel {
             'post' => $post,
             'special_vars' => [
                 'meta' => [
+                    'amp' => !!$options['amp'],
+                    'embed_media' => $options['embed_media'],
+                    'embed_social' => $options['embed_social'],
                     'editable' => !!$options['editable'],
                     'preview' => !!$options['preview'],
                     'title'=> !empty($post['meta_title']) ? $post['meta_title'] : $post['title'],
@@ -1124,6 +1138,7 @@ class Post extends AbstractModel {
     }
 
     private static function getPostMeta($post_id){
+        $ret = [];
         try{
             $meta = PostMeta::getMany(['post' => $post_id]);
             foreach($meta as $met){
@@ -1158,7 +1173,8 @@ class Post extends AbstractModel {
         $post['page'] = (int) $post['page'];
         $post['featured'] = (int) $post['featured'];
         $post['sticky'] = (int) $post['sticky'];
-
+        $post['content'] = preg_replace('/content\/uploads\/[0-9]{4}\/[0-9]{2}/', 'img', $post['content']);
+        
         // Convert dates from UTC to local
         $post['created'] = Leafpub::utcToLocal($post['created']);
         $post['pub_date'] = Leafpub::utcToLocal($post['pub_date']);
@@ -1255,6 +1271,93 @@ class Post extends AbstractModel {
         }
 
         return true;
+    }
+    
+    protected static function ampifyImageTags($content){
+        $content = str_replace('<img', '<amp-img', $content);
+        $embed_media = [];
+        $embed_social = [];
+
+        $doc = new \DOMDocument();
+        // see http://stackoverflow.com/a/8218649
+        @$doc->loadHTML(mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8'));
+
+        $tags = $doc->getElementsByTagName('amp-img');
+        foreach ($tags as $tag){
+            if ($tag->hasAttribute('srcset')){
+                $tag->setAttribute('layout', 'responsive');
+            } else {
+                $tag->setAttribute('layout', 'fixed');
+            }
+        }
+
+        $tags = $doc->getElementsByTagName('figcaption');
+        foreach ($tags as $tag){
+            $tag->removeAttribute('contenteditable');
+        }
+
+        $tags = $doc->getElementsByTagName('iframe');
+        $length = $tags->length;
+        for ($i = 0; $i < $length; $i++){//$tags as $tag){
+            $tag = $tags[0];
+            $parent = $tag->parentNode;
+            $src = $tag->getAttribute('src');
+
+            if (mb_stristr($src, 'youtube')){
+                if (!in_array('youtube', $embed_media)){
+                    $embed_media[] = 'youtube';
+                }
+                $newNode = $parent->appendChild(new \DOMElement('amp-youtube'));
+                $src = preg_replace('/https:\/\/www.youtube.com\/embed\//', '', $src);
+                $src = stristr($src, '?', true);
+                $newNode->setAttribute('data-videoid', $src);
+                $newNode->setAttribute('layout', "responsive");
+                $newNode->setAttribute('width', $tag->getAttribute('width'));
+                $newNode->setAttribute('height', $tag->getAttribute('height'));
+            } elseif (mb_stristr($src, 'vimeo')){
+                if (!in_array('vimeo', $embed_media)){
+                    $embed_media[] = 'vimeo';
+                }
+                $newNode = $parent->appendChild(new \DOMElement('amp-vimeo'));
+                $newNode->setAttribute('data-videoid', substr(strrchr($src, '/'), 1));
+                $newNode->setAttribute('layout', "responsive");
+                $newNode->setAttribute('width', $tag->getAttribute('width'));
+                $newNode->setAttribute('height', $tag->getAttribute('height'));
+            } elseif (mb_stristr($src, 'soundcloud')){
+                if (!in_array('soundcloud', $embed_media)){
+                    $embed_media[] = 'soundcloud';
+                }
+                $newNode = new \DOMElement('amp-soundcloud');
+                $newNode->setAttribute('data-trackid', "mGENRKrdoGY");
+                $newNode->setAttribute('layout', "fixed-height");
+                $newNode->setAttribute('data-visual', true);
+                $newNode->setAttribute('height', $tag->getAttribute('height'));
+            } elseif (mb_stristr($src, 'facebook')){
+                if (!in_array('facebook', $embed_social)){
+                    $embed_social[] = 'facebook';
+                }
+                $newNode = $parent->appendChild(new \DOMElement('amp-facebook'));
+                $src = urldecode(stristr(substr(stristr($src, '='), 1), '&', true));
+                $newNode->setAttribute('data-href', $src);
+                $newNode->setAttribute('layout', "responsive");
+                $newNode->setAttribute('width', $tag->getAttribute('width'));
+                $newNode->setAttribute('height', $tag->getAttribute('height'));
+            } /*elseif (mb_stristr($src, 'twitter')){
+                if ($embed_social === 'false' || $embed_social === 'twitter'){
+                    $embed_social = 'twitter';
+                    $newNode = $parent->appendChild(new \DOMElement('amp-twitter'));
+                    $newNode->setAttribute('data-tweetid', substr(strrchr($src, '/'), 1));
+                    $newNode->setAttribute('layout', "responsive");
+                    $newNode->setAttribute('width', $tag->getAttribute('width'));
+                    $newNode->setAttribute('height', $tag->getAttribute('height'));
+                }
+            }*/
+            $parent->removeChild($tag);
+        }
+        
+        $html = preg_replace('/^<!DOCTYPE.+?>/', '', str_replace( array('<html>', '</html>', '<body>', '</body>'), array('', '', '', ''), $doc->saveHTML()));
+        
+        return ['html' => $html, 'embed_media' => $embed_media, 'embed_social' => $embed_social];
     }
     
     // Assign posts to new user

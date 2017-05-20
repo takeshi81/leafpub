@@ -227,6 +227,7 @@ $(function() {
                 $('[data-editor="underline"]').toggleClass('on', this.underline('test'));
                 $('[data-editor="undo"]').prop('disabled', !this.undo('test'));
                 $('[data-editor="unorderedList"]').toggleClass('on', this.unorderedList('test'));
+                $('[data-editor="table"]').toggleClass('on', this.table('test'));
 
                 // Highlight dropdown buttons if at least one menu item is `on`
                 $('.dropdown-menu').each(function() {
@@ -323,15 +324,15 @@ $(function() {
                     if(res.uploaded.length) {
                         // Set post image
                         if(target === 'post-image') {
-                            setPostImage(res.uploaded[0].relative_path);
+                            setPostImage(res.uploaded[0].img);
                         }
 
                         // Insert into content
                         if(target === 'content') {
-                            if(res.uploaded[0].filename.match(/\.(gif|jpg|jpeg|png|svg)$/i)) {
+                            if(res.uploaded[0].extension.match(/(gif|jpg|jpeg|png|svg)$/i)) {
                                 // Insert image
                                 contentEditor.image('insert', {
-                                    src: res.uploaded[0].relative_path,
+                                    src: res.uploaded[0].img,
                                     alt: res.uploaded[0].filename,
                                     width: res.uploaded[0].width,
                                     height: res.uploaded[0].height
@@ -340,7 +341,7 @@ $(function() {
                                 // Insert link
                                 contentEditor.insertContent(
                                     $('<a>')
-                                    .attr('href', res.uploaded[0].relative_path)
+                                    .attr('href', res.uploaded[0].img)
                                     .text(res.uploaded[0].filename)
                                     .get(0).outerHTML
                                 );
@@ -446,6 +447,7 @@ $(function() {
         if(cmd === 'link') showPanel('.link-panel');
         if(cmd === 'embed') showPanel('.embed-panel');
         if(cmd === 'image') showPanel('.image-panel');
+        if(cmd === 'table'){}
     }
 
     $('[data-save]').on('click', function(){
@@ -475,7 +477,7 @@ $(function() {
 
         // Don't save if another request is pending
         if(request || !ready) return;
-
+        
         // Show progress
         progress.go(50);
         Leafpub.highlightErrors('.settings-form');
@@ -500,11 +502,19 @@ $(function() {
                     { style: 'success' }
                 ).then(function() {
                     // Remove save confirmation and redirect
-                    window.onbeforeunload = null;
                     if (saveAction === 'pb'){
+                        window.onbeforeunload = null;
+                        if (post){
+                            // Only call unlock if we're saving a post after edit
+                            $.ajax({
+                                type: 'GET',
+                                url: Leafpub.url('api/posts/unlock/' + encodeURIComponent(post)),
+                            });
+                        }
                         location.href = Leafpub.adminUrl('posts');
                     } else {
                         if (type === 'POST'){
+                            window.onbeforeunload = null;
                             location.href = Leafpub.adminUrl('posts/' + properties.slug);
                         }
                     }
@@ -597,11 +607,14 @@ $(function() {
         var slug = $('#slug').val(),
             title =
                 $.trim($('#meta-title').val()) ||
-                $.trim(titleEditor.getContent()),
+                $.trim(titleEditor.getContent()).slice(0,70),
             description =
                 $.trim($('#meta-description').val()) ||
-                $.trim($(contentEditor.getContent()).text());
-
+                $.trim($(contentEditor.getContent()).text()).slice(0,170);
+        
+        $('.meta-used.title').text(title.length);
+        $('.meta-used.description').text(description.length);
+        
         $('.se-slug').text(slug);
         $('.se-title').text(title);
         $('.se-description').text(description);
@@ -617,6 +630,7 @@ $(function() {
     }
 
     // Tooltips
+    /*
     $('.editor-toolbar').find('[title]')
     .tooltip({
         trigger: 'hover',
@@ -628,7 +642,7 @@ $(function() {
             event.preventDefault();
         }
     });
-
+    */
     // Watch for unsaved changes
 	window.onbeforeunload = function() {
         if(ready && cleanState !== JSON.stringify(serializePost())) {
@@ -704,7 +718,7 @@ $(function() {
 
             // Set the post image
             if(res.uploaded.length) {
-                setPostImage(res.uploaded[0].relative_path);
+                setPostImage(res.uploaded[0].img);
             }
 
             // Show feedback
@@ -844,6 +858,7 @@ $(function() {
             $(btn).addClass('active');
         })
         .on('hide.leafpub.panel', function() {
+            $('.media-list').css('display', 'none').html('');
             $(btn).removeClass('active');
         });
 
@@ -965,7 +980,7 @@ $(function() {
     (function() {
         var btn = $('[data-editor="image"]'),
             bookmark,
-            //figure,
+            figure,
             //figcaption,
             image,
             width,
@@ -982,16 +997,17 @@ $(function() {
         .on('show.leafpub.panel', function() {
             var src,
                 href,
+                sign,
                 alt;
-
             // Get bookmark and selected element
             bookmark = contentEditor.getBookmark();
             image = contentEditor.getSelectedElement();//).closest('img');
             //figure = $(contentEditor.getSelectedElement()).closest('figure.image');
             //figcaption = figure.find('figcaption');
-            
+
             if ($(image).is('figure')) {
                 $('#image-caption').prop('checked', true);
+                
                 if ($(image.firstChild).is('a')){
                     image = image.firstChild;
                 }
@@ -1008,7 +1024,8 @@ $(function() {
             height = $(image).attr('height') || null;
             cssClass = $(image).attr('class') || null;
             //caption = $(figcaption).html();
-
+            sign = $(image).data('sign');
+            
             // Set alignment radios
             $('.image-align-none').trigger('click');
             if(image) {
@@ -1030,9 +1047,10 @@ $(function() {
             $('#image-class').val(cssClass);
             $('#image-constrain').prop('checked', true);
             $('.image-open').prop('hidden', href.length === 0);
-            //if (image){
+            $('#image-sign').val(sign);
+            if (image){
                 $('.delete-image').prop('hidden', !image.length);
-            //}
+            }
 
             // Toggle button state
             $(btn).addClass('active');
@@ -1042,18 +1060,22 @@ $(function() {
         })
         .on('hide.leafpub.panel', function() {
             $('.media-list').css('display', 'none').html('');
+            page = 1; // reset the media list
+            more = true; // reset the media list
             $(btn).removeClass('active');
             contentEditor.focus();
         });
 
         $('.media-file').on('click', function(){
-            page = 1;
+            page = 1; // reset the media list
+            more = true // reset the media list
             $('.picture').css('background-image', '');
+            $('.post-image').css('background-image', '');
             $.ajax({
                 url: Leafpub.url('api/uploads'),
                 type: 'GET',
                 data: {
-                    page: page++,
+                    page: page,
                     query: query
                 }
             })
@@ -1071,7 +1093,7 @@ $(function() {
                 prepareEdit(values, type);
             },
             getValue: function() {
-                return $(this).attr('data-slug');
+                return [$(this).data('slug'), $(this).data('sign')];
             }
         });
 
@@ -1080,12 +1102,12 @@ $(function() {
                 scrollTop = $(list).scrollTop(),
                 scrollHeight = list.scrollHeight,
                 height = $(list).height(),
-                padding = 150,
+                padding = 75,
                 query = $('.media-search').val();
 
             if(!request && more && scrollTop + height + padding >= scrollHeight) {
                 // Show progress
-                //progress.go(50);
+                progress.go(50);
 
                 // Load next page
                 if(request) request.abort();
@@ -1099,7 +1121,7 @@ $(function() {
                 })
                 .done(function(res) {
                     request = null;
-
+            
                     // Are there more pages to load?
                     more = page < res.pagination.total_pages;
 
@@ -1110,24 +1132,25 @@ $(function() {
                 })
                 .always(function() {
                     // Hide progress
-                    //progress.go(100);
+                    progress.go(100);
                 });
             }
         });
 
         function prepareEdit(el, type){
             $.ajax({
-                url: Leafpub.url('api/upload/' + el),
+                url: Leafpub.url('api/upload/' + el[0] + '?width=300&sign=' + el[1]),
                 type: 'GET'
             })
             .done(function(res) {
                 if (res.success === true){
                     if (type === 'post-image'){
                         $('.media-list').css('display', 'none').html('');
-                        setPostImage(res.file.path);
+                        setPostImage(res.file.img);
                     } else {
-                        $('#image-src').val(res.file.path).trigger('change');
-                        $('#image-caption').val(res.file.caption);
+                        $('#image-src').val(res.file.img).trigger('change');
+                        $('#image-alt').val(res.file.caption);
+                        $('#image-sign').val(res.file.sign);
                     }
                 }
             });
@@ -1149,8 +1172,9 @@ $(function() {
                 newWidth = $('#image-width').val(),
                 newHeight = $('#image-height').val(),
                 cssClass = $('#image-class').val(),
-                align = $('.image-form').find('input[name="align"]:checked').val();
-                caption = $('#image-caption').prop('checked');
+                align = $('.image-form').find('input[name="align"]:checked').val(),
+                caption = $('#image-caption').prop('checked'),
+                sign = $('#image-sign').val();
 
             event.preventDefault();
 
@@ -1167,7 +1191,8 @@ $(function() {
                     height: newHeight,
                     align: align,
                     "class": cssClass,
-                    caption: caption
+                    caption: caption,
+                    sign: sign
                 });
             } else {
                 contentEditor.image('remove');
@@ -1200,9 +1225,9 @@ $(function() {
                 // Update the image
                 if(res.uploaded.length) {
                     if(res.uploaded.length) {
-                        $('.picture').css('background-image', 'url(\'' + res.uploaded[0].thumbnail + '\')');
+                        $('.picture').css('background-image', 'url(\'' + res.uploaded[0].img + '?width=300&sign=' + res.uploaded[0].sign + '\')');
                         $('.media-list').css('display', 'none').html('');
-                        $('#image-src').val(res.uploaded[0].relative_path).trigger('change');
+                        $('#image-src').val(res.uploaded[0].img).trigger('change');
                     }
                 }
 

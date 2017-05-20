@@ -22,6 +22,7 @@ use Leafpub\Admin,
     Leafpub\Theme,
     Leafpub\Importer,
     Leafpub\Mailer,
+    Leafpub\Update,
     Leafpub\Widget,
     Leafpub\Mailer\Mail\MailFactory,
     Leafpub\Mailer\Mail\AddressFactory,
@@ -258,6 +259,7 @@ class APIController extends Controller {
         $params = $request->getParams();
         $properties = $params['properties'];
         $slug = $action === 'add' ? $properties['slug'] : $args['slug'];
+        
         if ($slug !== $properties['slug']){
             $properties['oldSlug'] = $slug;
         } else {
@@ -669,7 +671,8 @@ class APIController extends Controller {
             Leafpub::strftime('%H:%M', strtotime($history['post_data']['pub_date']));
 
         $history['post_data']['pub_date'] =
-            Leafpub::strftime('%d %b %Y', strtotime($history['post_data']['pub_date']));
+            // HTML5 input type=date needs format Y-m-d
+            Leafpub::strftime('%Y-%m-%d', strtotime($history['post_data']['pub_date']));
 
         // Return the requested history item
         return $response->withJson([
@@ -1129,12 +1132,21 @@ class APIController extends Controller {
             'maintenance_message' => $params['maintenance-message'],
             'hbs_cache' => $params['hbs-cache'] === 'on' ? 'on' : 'off',
             'mailer' => $params['mailer'],
-            'showDashboard' => $params['showDashboard'] === 'on' ? 'on' : 'off'
+            'showDashboard' => $params['showDashboard'] === 'on' ? 'on' : 'off',
+            'amp' => $params['amp'] === 'on' ? 'on' : 'off'
         ];
 
         // Update settings
         foreach($settings as $name => $value) {
             Setting::edit(['name' => $name, 'value' => $value]);
+        }
+
+        if (!Language::installLanguage($params['language'])){
+            Setting::edit(['name' => 'language', 'value' => 'en-us']);
+            return $response->withJson([
+                'success' => false,
+                'message' => 'Unable to download and install ' . $params['language'] . '. Setting language back to en-us.'
+            ]);
         }
 
         // Send response
@@ -1744,7 +1756,7 @@ class APIController extends Controller {
         ]);
     }
 
-    public function setDashboard($request, $response, $next){
+    public function setDashboard($request, $response, $args){
         try {
             $data = $request->getParams('data');
             Leafpub::getLogger()->debug($data['data']);
@@ -1760,7 +1772,7 @@ class APIController extends Controller {
         }
     }
 
-    public function getWidget($request, $response, $next){
+    public function getWidget($request, $response, $args){
         $widget = $request->getParam('widget');
 
         $html = Widget::getWidget($widget);
@@ -1770,5 +1782,31 @@ class APIController extends Controller {
                 'html' => $html
             ]);
         }
+    }
+
+    public function updateCheck($request, $response, $args){
+        if (!Session::isRole(['owner', 'admin'])){
+            return $response->withStatus(403);
+        }
+        $updates = Update::checkForUpdates();
+        
+        $html = Admin::render('partials/update-table',[
+            'updates' => $updates
+        ]);
+
+        return $response->withJson([
+            'success' => true,
+            'html' => $html
+        ]);
+    }
+
+    public function runUpdate($request, $response, $args){
+        if (!Session::isRole(['owner', 'admin'])){
+            return $response->withStatus(403);
+        }
+        $params = $request->getParams();
+        $bRet = Update::doUpdate($params);
+
+        return $response->withJson(['success' => $bRet]);
     }
 }

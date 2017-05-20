@@ -79,7 +79,7 @@ var Editor;
             document_base_url: Leafpub.url().replace(/\/$/, '') + '/',
             element_format: 'html',
             entity_encoding: 'raw',
-            extended_valid_elements: 'i[class],iframe[*],script[*],figure',
+            extended_valid_elements: 'i[class],iframe[*],script[*],figure[class]',
             formats: {
                 // Align left
                 alignleft: [
@@ -159,7 +159,7 @@ var Editor;
             plugins: 'lists,paste,table,textpattern',
             relative_urls: true,
             selector: '[data-leafpub-id="' + element.getAttribute('data-leafpub-id') + '"]',
-            skin: false,
+            skin: false,//'lightgray',
             textpattern_patterns: [
                 {start: '*', end: '*', format: 'italic'},
                 {start: '_', end: '_', format: 'italic'},
@@ -180,6 +180,7 @@ var Editor;
                 {start: '- ', cmd: 'InsertUnorderedList'}
             ],
             toolbar: false,
+            //table_toolbar: 'tabledelete | tableinsertrowbefore tableinsertrowafter tabledeleterow | tableinsertcolbefore tableinsertcolafter tabledeletecol',
             setup: function(ed) {
                 instance.editor = ed;
 
@@ -196,6 +197,33 @@ var Editor;
                         open: function() {},
                         setParams: function() {}
                     };
+                    
+                    function hasImageClass(node) {
+                      var className = node.attr('class');
+                      return className && /\bimage\b/.test(className);
+                    }
+            
+                    function toggleContentEditableState(state) {
+                      return function (nodes) {
+                        var i = nodes.length, node;
+            
+                        function toggleContentEditable(node) {
+                          node.attr('contenteditable', state ? 'true' : null);
+                        }
+            
+                        while (i--) {
+                          node = nodes[i];
+            
+                          if (hasImageClass(node)) {
+                            node.attr('contenteditable', state ? 'false' : null);
+                            tinymce.util.Tools.each(node.getAll('figcaption'), toggleContentEditable);
+                          }
+                        }
+                      };
+                    }
+            
+                    instance.editor.parser.addNodeFilter('figure', toggleContentEditableState(true));
+                    instance.editor.serializer.addNodeFilter('figure', toggleContentEditableState(false));
                 });
 
                 // Prepare embed elements when content is set. We store the original embed code
@@ -578,6 +606,15 @@ var Editor;
             if(cmd === 'test') {
                 return !!image;
             } else if(cmd === 'insert') {
+                var generateSrcSet = function(path, sign){
+                    var srcSet = '';
+                    for (var i = 1; i <= 10; i++){
+                        var widthP = i*200;
+                        srcSet += path + '?width=' + widthP + '&sign=' + sign + ' ' + widthP + 'w,';
+                    }
+                    return srcSet.slice(0, srcSet.length - 1);
+                };
+                
                 editor.undoManager.transact(function () {
                     if (!image) {
                         editor.focus();
@@ -588,6 +625,8 @@ var Editor;
                             width: options.width || null,
                             height: options.height || null,
                             //"class": options.class || null
+                            srcset: generateSrcSet(options.src, options.sign),
+                            "data-sign": options.sign
                         });
                         editor.selection.setContent(tmp);
                         //editor.insertContent(tmp);
@@ -602,6 +641,8 @@ var Editor;
                             width: options.width || null,
                             height: options.height || null,
                             //"class": options.class || null
+                            srcset: generateSrcSet(options.src, options.sign),
+                            "data-sign": options.sign
                         });
                     }
 
@@ -657,7 +698,9 @@ var Editor;
                         if (!editor.dom.is(image.parentNode, 'figure.image')) {
                             oldImg = image;
                             image = image.cloneNode(true);
-                            figure = editor.dom.create('figure', { 'class': 'image' });
+                            editor.dom.setAttribs(image, {'class': ''});
+                            figure = editor.dom.create('figure');
+                            editor.dom.setAttribs(figure, { 'class': 'image' });
                             figure.appendChild(image);
                             figure.appendChild(editor.dom.create('figcaption', { contentEditable: true }, 'text'));
                             figure.contentEditable = false;
@@ -756,6 +799,17 @@ var Editor;
                 return !!this.editor.dom.getParent(this.editor.selection.getNode(), 'ul');
             } else {
                 this.editor.execCommand('InsertUnorderedList');
+            }
+        },
+
+        table: function(cmd){
+            //if(!cmd) return;
+            if(cmd === 'test') {
+                return !!this.editor.dom.getParent(this.editor.selection.getNode(), 'table');
+            } else {
+                this.editor.plugins.table.insertTable(3,3);
+                this.editor.addVisual();
+                //this.editor.execCommand('mceInsertTable');
             }
         }
     };
